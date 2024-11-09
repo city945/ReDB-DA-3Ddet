@@ -66,6 +66,8 @@ class WaymoDataset(DatasetTemplate):
                 sampled_waymo_infos.append(self.infos[k])
             self.infos = sampled_waymo_infos
             self.logger.info('Total sampled samples for Waymo dataset: %d' % len(self.infos))
+        if self.dataset_cfg.get("DEBUG", False):
+            self.infos = self.infos[:16]
 
     @staticmethod
     def check_sequence_name_with_all_version(sequence_file):
@@ -389,7 +391,7 @@ if __name__ == '__main__':
     if args.func == 'create_waymo_infos':
         import yaml
         from easydict import EasyDict
-        dataset_cfg = EasyDict(yaml.load(open(args.cfg_file)))
+        dataset_cfg = EasyDict(yaml.safe_load(open(args.cfg_file)))
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
         create_waymo_infos(
             dataset_cfg=dataset_cfg,
