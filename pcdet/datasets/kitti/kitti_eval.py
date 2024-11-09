@@ -43,7 +43,7 @@ def transform_to_kitti_format(pred_infos, gt_annos, dataset, fakelidar):
             'Sign': 'Sign',
             'Car': 'Car'
         }
-    elif dataset in ['lyft', 'nuscenes']:
+    elif dataset in [ 'nuscenes']:
         map_name_to_kitti = {
             'car': 'Car',
             'pedestrian': 'Pedestrian',
@@ -87,7 +87,6 @@ def main():
 
     gt_keys = {
         'kitti': ['gt_boxes_lidar'],
-        'lyft': 'gt_boxes_lidar',
         'nuscenes': 'gt_boxes_lidar'
     }
 

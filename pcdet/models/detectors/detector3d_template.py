@@ -325,7 +325,6 @@ class Detector3DTemplate(nn.Module):
         spconv_keys = find_all_spconv_keys(self)
 
         update_model_state = {}
-        spconv_matched_state = {}
         for key, val in model_state_disk.items():
             if key in spconv_keys and key in state_dict and state_dict[key].shape != val.shape:
                 # with different spconv versions, we need to adapt weight shapes for spconv blocks
@@ -340,14 +339,11 @@ class Detector3DTemplate(nn.Module):
                     if val_implicit.shape == state_dict[key].shape:
                         val = val_implicit.contiguous()
 
-            spconv_matched_state[key] = val
             if key in state_dict and state_dict[key].shape == val.shape:
                 update_model_state[key] = val
                 # logger.info('Update weight %s: %s' % (key, str(val.shape)))
 
-        if cfg.get('SELF_TRAIN', None) and cfg.SELF_TRAIN.get('DSNORM', None):
-            self.load_state_dict(spconv_matched_state)
-        elif strict:
+        if strict:
             self.load_state_dict(update_model_state)
         else:
             state_dict.update(update_model_state)
