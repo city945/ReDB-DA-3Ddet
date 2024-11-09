@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+import datetime
 
 def check_numpy_to_torch(x):
     if isinstance(x, np.ndarray):

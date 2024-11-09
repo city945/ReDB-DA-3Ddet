@@ -94,16 +94,45 @@ python -m pcdet.datasets.waymo.waymo_dataset --func create_waymo_infos \
 
 Note that you do not need to install `waymo-open-dataset` if you have already processed the data before and do not need to evaluate with official Waymo Metrics. 
 
-## Training & Testing
 
+## Required Setup
 
-### Test and evaluate the pretrained models
+### WandB
+We use WandB to log the training/test data. Please follow the https://wandb.ai to install and start the experiments with the WandB.
+### Sampling source GT for self-training
+You need to make some symbolic links to make the source GT pool available for the target domain. For example Waymo -> KITTI, when you are self-training on the KITTI, you need go to "kitti" folder then add symbolic links:
+```shell script
+ln YOUR_PATH/waymo/waymo_processed_data_v0_5_0_waymo_dbinfos_train_sampled_1.pkl -s
+ln YOUR_PATH/waymo/waymo_processed_data_v0_5_0_gt_database_train_sampled_1 -s
+ln YOUR_PATH/waymo/waymo_processed_data_v0_5_0_gt_database_train_sampled_1_global.npy -s
+```
+
+## Training & Testing for ReDB
+
+### Train the pre-train model
+Take Source Only model with SECOND-IoU on Waymo -> KITTI  as an example:
+```shell script
+sh scripts/dist_train.sh ${NUM_GPUS} --cfg_file cfgs/da-waymo-kitti_models/secondiou/secondiou_so.yaml \
+    --batch_size ${BATCH_SIZE}
+```
+Notice that we typically select the last checkpoint as the  **best model** (source risk).
+
+### Self-training process
+You need to set the `--pretrained_model ${PRETRAINED_MODEL}` when finish the
+following self-training process.
+```shell script
+sh scripts/dist_train.sh ${NUM_GPUS} --cfg_file cfgs/da-waymo-kitti_models/secondiou_ReDB/secondiou_ReDB.yaml \
+    --batch_size ${BATCH_SIZE} --pretrained_model ${PRETRAINED_MODEL}
+```
+Notice that we typically select the last checkpoint as the  **best model**. Please see the Model Evaluation section in Supplementary Material for more details.
+
+### Test
 * Test with a pretrained model: 
 ```shell script
 python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --ckpt ${CKPT}
 ```
 
-* To test all the saved checkpoints of a specific training setting and draw the performance curve on the Tensorboard, add the `--eval_all` argument: 
+* To test all the saved checkpoints of a specific training setting and draw the performance curve on the Tensorboard / WandB, add the `--eval_all` argument: 
 ```shell script
 python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --eval_all
 ```
@@ -125,41 +154,3 @@ sh scripts/dist_test.sh ${NUM_GPUS} \
 sh scripts/slurm_test_mgpu.sh ${PARTITION} ${NUM_GPUS} \ 
     --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE}
 ```
-
-
-### Train a model
-You could optionally add extra command line parameters `--batch_size ${BATCH_SIZE}` and `--epochs ${EPOCHS}` to specify your preferred parameters. 
-  
-
-* Train with multiple GPUs or multiple machines
-```shell script
-sh scripts/dist_train.sh ${NUM_GPUS} --cfg_file ${CONFIG_FILE}
-
-# or 
-
-sh scripts/slurm_train.sh ${PARTITION} ${JOB_NAME} ${NUM_GPUS} --cfg_file ${CONFIG_FILE}
-```
-
-* Train with a single GPU:
-```shell script
-python train.py --cfg_file ${CONFIG_FILE}
-```
-
-### Train the Pre-trained 
-Take Source Only model with SECOND-IoU on Waymo -> KITTI  as an example:
-```shell script
-sh scripts/dist_train.sh ${NUM_GPUS} --cfg_file cfgs/da-waymo-kitti_models/secondiou/secondiou_old_anchor.yaml \
-    --batch_size ${BATCH_SIZE}
-```
-Notice that you need to select the **best model** as your Pre-train model, 
-because the performance of adapted model is really unstable when target domain is KITTI.
-
-
-### Self-training Process
-You need to set the `--pretrained_model ${PRETRAINED_MODEL}` when finish the
-following self-training process.
-```shell script
-sh scripts/dist_train.sh ${NUM_GPUS} --cfg_file cfgs/da-waymo-kitti_models/secondiou_st3d/secondiou_st3d_car.yaml \
-    --batch_size ${BATCH_SIZE} --pretrained_model ${PRETRAINED_MODEL}
-```
-Notice that you also need to focus the performance of the **best model**.
