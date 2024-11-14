@@ -9,7 +9,7 @@ from .processor.data_processor import DataProcessor
 from .processor.point_feature_encoder import PointFeatureEncoder
 from ..utils import common_utils, box_utils, self_training_utils
 from ..ops.roiaware_pool3d import roiaware_pool3d_utils
-
+from pcdet.config import cfg
 
 class DatasetTemplate(torch_data.Dataset):
     def __init__(self, dataset_cfg=None, class_names=None, training=True, root_path=None, logger=None):
@@ -211,6 +211,7 @@ class DatasetTemplate(torch_data.Dataset):
                 voxel_num_points: optional (num_voxels)
                 ...
         """
+
         if self.training:
             # filter gt_boxes without points
             num_points_in_gt = data_dict.get('num_points_in_gt', None)
@@ -222,11 +223,22 @@ class DatasetTemplate(torch_data.Dataset):
             mask = (num_points_in_gt >= self.dataset_cfg.get('MIN_POINTS_OF_GT', 1))
             data_dict['gt_boxes'] = data_dict['gt_boxes'][mask]
             data_dict['gt_names'] = data_dict['gt_names'][mask]
+
+            # remove non-existing classes and boxes
+            # @! 不应该在 gt_sampling 之前删除非检测目标，这可能会导致非检测目标类别在采样时被删除替换为采样目标，稍微有点影响背景类别的数据多样性
+            selected = common_utils.keep_arrays_by_name(data_dict['gt_names'], self.class_names)
+            data_dict['gt_boxes'] = data_dict['gt_boxes'][selected]
+            data_dict['gt_names'] = data_dict['gt_names'][selected]
+
+
             if 'gt_classes' in data_dict:
                 data_dict['gt_classes'] = data_dict['gt_classes'][mask]
                 data_dict['gt_scores'] = data_dict['gt_scores'][mask]
 
+
             assert 'gt_boxes' in data_dict, 'gt_boxes should be provided for training'
+
+
             gt_boxes_mask = np.array([n in self.class_names for n in data_dict['gt_names']], dtype=np.bool_)
 
             data_dict = self.data_augmentor.forward(
@@ -236,11 +248,16 @@ class DatasetTemplate(torch_data.Dataset):
                 }
             )
 
+            if cfg.DATA_CONFIG.DATASET == 'NuScenesDataset' and len(data_dict['gt_boxes']) != 0:
+                data_dict['gt_names'][data_dict['gt_names'] == 'motorcycle'] = 'bicycle'
         if data_dict.get('gt_boxes', None) is not None:
+
             selected = common_utils.keep_arrays_by_name(data_dict['gt_names'], self.class_names)
+
+
             data_dict['gt_boxes'] = data_dict['gt_boxes'][selected]
             data_dict['gt_names'] = data_dict['gt_names'][selected]
-            # for pseudo label has ignore labels.
+
             if 'gt_classes' not in data_dict:
                 gt_classes = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names']], dtype=np.int32)
             else:

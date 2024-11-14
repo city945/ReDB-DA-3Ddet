@@ -5,6 +5,7 @@ import torch
 import tqdm
 from torch.nn.utils import clip_grad_norm_
 
+import wandb
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
@@ -56,6 +57,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                 tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
                 for key, val in tb_dict.items():
                     tb_log.add_scalar('train/' + key, val, accumulated_iter)
+                wandb.log({'train/loss': loss}, step=accumulated_iter)
+                wandb.log({'meta_data/learning_rate': cur_lr}, step=accumulated_iter)
+                for key, val in tb_dict.items():
+                    tb_log.add_scalar('train/' + key, val, accumulated_iter)
+                    wandb.log({'train/' + key: val}, step=accumulated_iter)
     if rank == 0:
         pbar.close()
     return accumulated_iter

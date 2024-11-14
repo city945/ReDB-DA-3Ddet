@@ -17,6 +17,11 @@ from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_f
 from eval_utils import eval_utils
 from pcdet.models.model_utils.dsnorm import DSNorm
 
+import wandb
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["WANDB_MODE"] = "offline"
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -39,6 +44,9 @@ def parse_config():
     parser.add_argument('--eval_all', action='store_true', default=False, help='whether to evaluate all checkpoints')
     parser.add_argument('--ckpt_dir', type=str, default=None, help='specify a ckpt directory to be evaluated if needed')
     parser.add_argument('--save_to_file', action='store_true', default=False, help='')
+    parser.add_argument('--test_dataset', type=str, default='T',
+                        help='eval tag for this experiment')
+    parser.add_argument('--cpu_core_num', default=None)
     parser.add_argument('--debug', action='store_true', default=False, help='debug setting')
 
     args = parser.parse_args()
@@ -51,6 +59,8 @@ def parse_config():
 
     if args.set_cfgs is not None:
         cfg_from_list(args.set_cfgs, cfg)
+    if args.cpu_core_num is not None:
+        torch.set_num_threads(int(args.cpu_core_num))
 
     return args, cfg
 
@@ -93,6 +103,7 @@ def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir
 
     # tensorboard log
     if cfg.LOCAL_RANK == 0:
+        init_wandb(args, cfg)
         tb_log = SummaryWriter(log_dir=str(eval_output_dir / ('tensorboard_%s' % cfg.DATA_CONFIG.DATA_SPLIT['test'])))
     total_time = 0
     first_eval = True
@@ -130,12 +141,45 @@ def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir
         if cfg.LOCAL_RANK == 0:
             for key, val in tb_dict.items():
                 tb_log.add_scalar(key, val, cur_epoch_id)
-
+                wandb.log({key: val}, step=int(cur_epoch_id))
         # record this epoch which has been evaluated
         with open(ckpt_record_file, 'a') as f:
             print('%s' % cur_epoch_id, file=f)
         logger.info('Epoch %s has been evaluated' % cur_epoch_id)
 
+
+def init_wandb(args, cfg):
+    adaptation_task = '{}2{}'.format(
+        cfg.DATA_CONFIG.DATASET.split('Data')[0][0],
+        cfg.DATA_CONFIG_TAR.DATASET.split('Data')[0][0])
+    proj_name = "ReDB_{}_eval".format(adaptation_task)
+    entity_name = "" # Please Put your entity name in WANDB
+    wandb.init(project=proj_name, entity=entity_name, config=cfg, mode='offline')
+    wandb.config.update(args)
+
+    train_mode = 'ST3D' \
+        if cfg.get('SELF_TRAIN', None) else 'PT'
+
+    # For self train, we want split ST3D and
+    if cfg.get('SELF_TRAIN', None):
+        train_mode = 'ST3D' \
+            if cfg.SELF_TRAIN.MEMORY_ENSEMBLE.ENABLED is True \
+            else 'ST'
+
+    if 'random_object_scaling' not in cfg.DATA_CONFIG.DATA_AUGMENTOR.DISABLE_AUG_LIST:
+        aug_type = 'ROS'
+    elif 'normalize_object_size' not in cfg.DATA_CONFIG.DATA_AUGMENTOR.DISABLE_AUG_LIST:
+        aug_type = 'SN'
+    else:
+        aug_type = 'SO'
+
+    train_mode_and_aug = train_mode + '-' + aug_type
+
+    # cls_num = 'MC' if len(cfg.CLASS_NAMES) > 1 else 'CAR'
+    run_name = 'EVAL_ON_' + args.test_dataset.upper() + '-' + \
+               train_mode_and_aug + \
+               '-' + cfg.MODEL.NAME + '-' + args.extra_tag
+    wandb.run.name = run_name
 
 def main():
     args, cfg = parse_config()

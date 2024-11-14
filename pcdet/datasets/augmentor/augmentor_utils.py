@@ -126,7 +126,7 @@ def global_sampling(gt_boxes, points, gt_boxes_mask, sample_ratio_range, prob):
     return gt_boxes, points, gt_boxes_mask
 
 
-def scale_pre_object(gt_boxes, points, gt_boxes_mask, scale_perturb, num_try=50):
+def scale_pre_object(gt_boxes, points, gt_boxes_mask, scale_perturb, gt_names=None, num_try=50):
     """
     uniform sacle object with given range
     Args:
@@ -138,17 +138,37 @@ def scale_pre_object(gt_boxes, points, gt_boxes_mask, scale_perturb, num_try=50)
     Returns:
     """
     num_boxes = gt_boxes.shape[0]
-    if not isinstance(scale_perturb, (list, tuple, np.ndarray)):
-        scale_perturb = [-scale_perturb, scale_perturb]
 
-    # boxes wise scale ratio
-    scale_noises = np.random.uniform(scale_perturb[0], scale_perturb[1], size=[num_boxes, num_try])
+    if isinstance(scale_perturb, dict): # ROS for each class:
+        scale_perturb_all_classes = scale_perturb
+        scale_noises = []
+        for k in range(num_boxes):
+            gt_name = gt_names[k]
+            try:
+                scale_perturb = scale_perturb_all_classes[gt_name]
+            except KeyError: # class not interested, do not ROS
+                scale_noises.append(np.random.uniform(0.99, 1.01,
+                                                      size=[1, num_try]))
+                continue
+            scale_noises.append(np.random.uniform(scale_perturb[0],
+                                                  scale_perturb[1],
+                                                  size=[1, num_try]))
+        if len(scale_noises) != 0: # only concatenate when boxes exist
+            scale_noises = np.concatenate(scale_noises)
+    else:
+        if not isinstance(scale_perturb, (list, tuple, np.ndarray)):
+            scale_perturb = [-scale_perturb, scale_perturb]
+            # boxes wise scale ratio
+        scale_noises = np.random.uniform(scale_perturb[0], scale_perturb[1],
+                                         size=[num_boxes, num_try])
+
     for k in range(num_boxes):
         if gt_boxes_mask[k] == 0:
             continue
 
         scl_box = copy.deepcopy(gt_boxes[k])
         scl_box = scl_box.reshape(1, -1).repeat([num_try], axis=0)
+
         scl_box[:, 3:6] = scl_box[:, 3:6] * scale_noises[k].reshape(-1, 1).repeat([3], axis=1)
 
         # detect conflict
@@ -156,7 +176,7 @@ def scale_pre_object(gt_boxes, points, gt_boxes_mask, scale_perturb, num_try=50)
         if num_boxes > 1:
             self_mask = np.ones(num_boxes, dtype=np.bool_)
             self_mask[k] = False
-            iou_matrix = iou3d_nms_utils.boxes_bev_iou_cpu(scl_box, gt_boxes[self_mask])
+            iou_matrix = iou3d_nms_utils.boxes_bev_iou_cpu(scl_box[:,:7], gt_boxes[self_mask][:,:7])
             ious = np.max(iou_matrix, axis=1)
             no_conflict_mask = (ious == 0)
             # all trys have conflict with other gts
@@ -169,10 +189,11 @@ def scale_pre_object(gt_boxes, points, gt_boxes_mask, scale_perturb, num_try=50)
             try_idx = 0
 
         point_masks = roiaware_pool3d_utils.points_in_boxes_cpu(
-            points[:, 0:3],np.expand_dims(gt_boxes[k], axis=0)).squeeze(0)
+            points[:, 0:3],np.expand_dims(gt_boxes[k], axis=0)[:,:7]).squeeze(0)
 
         obj_points = points[point_masks > 0]
         obj_center, lwh, ry = gt_boxes[k, 0:3], gt_boxes[k, 3:6], gt_boxes[k, 6]
+        ry = np.array([ry])
 
         # relative coordinates
         obj_points[:, 0:3] -= obj_center
@@ -190,7 +211,7 @@ def scale_pre_object(gt_boxes, points, gt_boxes_mask, scale_perturb, num_try=50)
         # if enlarge boxes, remove bg points
         if scale_noises[k][try_idx] > 1:
             points_dst_mask = roiaware_pool3d_utils.points_in_boxes_cpu(points[:, 0:3],
-                                                                        np.expand_dims(gt_boxes[k],
+                                                                        np.expand_dims(gt_boxes[k][0:7],
                                                                                        axis=0)).squeeze(0)
 
             keep_mask = ~np.logical_xor(point_masks, points_dst_mask)
@@ -199,7 +220,7 @@ def scale_pre_object(gt_boxes, points, gt_boxes_mask, scale_perturb, num_try=50)
     return points, gt_boxes
 
 
-def normalize_object_size(boxes, points, boxes_mask, size_res):
+def normalize_object_size(boxes, points, boxes_mask, class_names, size_res_all_cls):
     """
     :param boxes: (N, 7) under unified boxes
     :param points: (N, 3 + C)
@@ -213,6 +234,8 @@ def normalize_object_size(boxes, points, boxes_mask, size_res):
         # skip boxes that not need to normalize
         if boxes_mask[k] == 0:
             continue
+        cls = class_names[k]
+        size_res = size_res_all_cls[cls]
         masks = roiaware_pool3d_utils.points_in_boxes_cpu(points[:, 0:3], boxes[k:k+1]).squeeze(0)
         obj_points = points[masks > 0]
         obj_center, lwh, ry = boxes[k, 0:3], boxes[k, 3:6], boxes[k, 6]

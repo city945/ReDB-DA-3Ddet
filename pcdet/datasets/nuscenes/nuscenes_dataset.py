@@ -39,9 +39,6 @@ class NuScenesDataset(DatasetTemplate):
         self.logger.info('Total samples for NuScenes dataset: %d' % (len(nuscenes_infos)))
 
     def balanced_infos_resampling(self, infos):
-        """
-        Class-balanced sampling of nuScenes dataset from https://arxiv.org/abs/1908.09492
-        """
         if self.class_names is None:
             return infos
 
@@ -139,6 +136,9 @@ class NuScenesDataset(DatasetTemplate):
             else:
                 mask = None
 
+            if 'motorcycle' in info['gt_names']: # For DA task only
+                info['gt_names'][info['gt_names'] == 'motorcycle'] = 'bicycle'
+
             input_dict.update({
                 'gt_names': info['gt_names'] if mask is None else info['gt_names'][mask],
                 'gt_boxes': info['gt_boxes'] if mask is None else info['gt_boxes'][mask]
@@ -149,10 +149,6 @@ class NuScenesDataset(DatasetTemplate):
 
             if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
                 input_dict['gt_boxes'] = None
-
-            # for debug only
-            # gt_boxes_mask = np.array([n in self.class_names for n in input_dict['gt_names']], dtype=np.bool_)
-            # debug_dict = {'gt_boxes': copy.deepcopy(input_dict['gt_boxes'][gt_boxes_mask])}
 
         if self.dataset_cfg.get('FOV_POINTS_ONLY', None):
             input_dict['points'] = self.extract_fov_data(
@@ -231,11 +227,18 @@ class NuScenesDataset(DatasetTemplate):
 
     def kitti_eval(self, eval_det_annos, eval_gt_annos, class_names):
         from ..kitti.kitti_object_eval_python import eval as kitti_eval
-
+        # map_name_to_kitti 中将所有 DA 实验的类别映射写全，则 transform_to_kitti_format 之后必定就是 KITTI 的三个类名，后续也不需要过滤
+        class_names = ['Car', 'Pedestrian', 'Cyclist']
         map_name_to_kitti = {
+            'Vehicle': 'Car',
             'car': 'Car',
+            'Pedestrian': 'Pedestrian',
             'pedestrian': 'Pedestrian',
-            'truck': 'Truck',
+            'truck': 'Car',
+            'Cyclist': 'Cyclist',
+            'cyclist': 'Cyclist',
+            'bicycle': 'Cyclist',
+            'motorcycle': 'Cyclist'
         }
 
         def transform_to_kitti_format(annos, info_with_fakelidar=False, is_gt=False):
@@ -295,6 +298,7 @@ class NuScenesDataset(DatasetTemplate):
                 kitti_class_names.append(map_name_to_kitti[x])
             else:
                 kitti_class_names.append('Person_sitting')
+        kitti_class_names = class_names
         ap_result_str, ap_dict = kitti_eval.get_official_eval_result(
             gt_annos=eval_gt_annos, dt_annos=eval_det_annos, current_classes=kitti_class_names
         )

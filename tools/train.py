@@ -1,25 +1,26 @@
 import _init_path
 import os
+import torch
+import torch.nn as nn
+from tensorboardX import SummaryWriter
+from pcdet.config import cfg, log_config_to_file, cfg_from_list, cfg_from_yaml_file
+from pcdet.utils import common_utils
+from pcdet.datasets import build_dataloader
+from pcdet.models import build_network, model_fn_decorator
+from pcdet.models.model_utils.dsnorm import DSNorm
+
+import torch.distributed as dist
+from train_utils.optimization import build_optimizer, build_scheduler
+from train_utils.train_utils import train_model
 from pathlib import Path
 import argparse
 import datetime
 import glob
+import wandb
 
-import torch
-import torch.nn as nn
-from tensorboardX import SummaryWriter
-import torch.distributed as dist
-from test import repeat_eval_ckpt
-
-from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
-from pcdet.datasets import build_dataloader
-from pcdet.models.model_utils.dsnorm import DSNorm
-from pcdet.models import build_network, model_fn_decorator
-from pcdet.utils import common_utils
-from train_utils.optimization import build_optimizer, build_scheduler
-from train_utils.train_utils import train_model
-from train_utils.train_st_utils import train_model_st
-
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["WANDB_MODE"] = "offline"
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -37,7 +38,7 @@ def parse_config():
     parser.add_argument('--fix_random_seed', action='store_true', default=False, help='')
     parser.add_argument('--ckpt_save_interval', type=int, default=1, help='number of training epochs')
     parser.add_argument('--local_rank', type=int, default=0, help='local rank for distributed training')
-    parser.add_argument('--max_ckpt_save_num', type=int, default=30, help='max number of saved checkpoint')
+    parser.add_argument('--max_ckpt_save_num', type=int, default=200, help='max number of saved checkpoint')
     parser.add_argument('--merge_all_iters_to_one_epoch', action='store_true', default=False, help='')
     parser.add_argument('--set', dest='set_cfgs', default=None, nargs=argparse.REMAINDER,
                         help='set extra config keys if needed')
@@ -45,9 +46,7 @@ def parse_config():
     parser.add_argument('--max_waiting_mins', type=int, default=0, help='max waiting minutes')
     parser.add_argument('--start_epoch', type=int, default=0, help='')
     parser.add_argument('--save_to_file', action='store_true', default=False, help='')
-    parser.add_argument('--eval_fov_only', action='store_true', default=False, help='')
-    parser.add_argument('--eval_src', action='store_true', default=False, help='')
-    parser.add_argument('--num_epochs_to_eval', type=int, default=30, help='number of checkpoints to be evaluated')
+    parser.add_argument('--cpu_core_num', default=None)
     parser.add_argument('--debug', action='store_true', default=False, help='debug setting')
 
     args = parser.parse_args()
@@ -59,8 +58,43 @@ def parse_config():
     if args.set_cfgs is not None:
         cfg_from_list(args.set_cfgs, cfg)
 
+    # 没什么用的设置
+    if args.cpu_core_num is not None:
+        torch.set_num_threads(int(args.cpu_core_num))
+
     return args, cfg
 
+def init_wandb(args, cfg):
+
+    adaptation_task = '{}2{}'.format(
+        cfg.DATA_CONFIG.DATASET.split('Data')[0][0],
+        cfg.DATA_CONFIG_TAR.DATASET.split('Data')[0][0])
+
+    proj_name = "ReDB_{}_train".format(adaptation_task)
+    entity_name = "" # Please Put your entity name in WANDB
+    wandb.init(project=proj_name, entity=entity_name, config=cfg, mode='offline')
+    wandb.config.update(args)
+    train_mode = 'ST3D' \
+        if cfg.get('SELF_TRAIN', None) else 'PT'
+
+    # For self train, we want split ST3D and
+    if cfg.get('SELF_TRAIN', None):
+        train_mode = 'ST3D' \
+            if cfg.SELF_TRAIN.MEMORY_ENSEMBLE.ENABLED is True \
+            else 'ST'
+
+    if 'random_object_scaling' not in cfg.DATA_CONFIG.DATA_AUGMENTOR.DISABLE_AUG_LIST:
+        aug_type = 'ROS'
+    elif 'normalize_object_size' not in cfg.DATA_CONFIG.DATA_AUGMENTOR.DISABLE_AUG_LIST:
+        aug_type = 'SN'
+    else:
+        aug_type = 'SO'  # source only
+
+    train_mode_and_aug = train_mode + '-' + aug_type
+    run_name = train_mode_and_aug + '-' + \
+               cfg.MODEL.NAME + '-' + args.extra_tag
+
+    wandb.run.name = run_name
 
 def main():
     args, cfg = parse_config()
@@ -183,6 +217,8 @@ def main():
     # select proper trainer
     train_func = train_model_st if cfg.get('SELF_TRAIN', None) else train_model
 
+    if tb_log is not None:
+        init_wandb(args, cfg)
     # -----------------------start training---------------------------
     logger.info('**********************Start training %s/%s(%s)**********************'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
@@ -213,40 +249,6 @@ def main():
 
     logger.info('**********************End training %s/%s(%s)**********************\n\n\n'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-
-    logger.info('**********************Start evaluation %s/%s(%s)**********************' %
-                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-
-    if args.eval_fov_only:
-        cfg.DATA_CONFIG_TAR.FOV_POINTS_ONLY = True
-
-    if cfg.get('DATA_CONFIG_TAR', None) and not args.eval_src:
-        test_set, test_loader, sampler = build_dataloader(
-            dataset_cfg=cfg.DATA_CONFIG_TAR,
-            class_names=cfg.DATA_CONFIG_TAR.CLASS_NAMES,
-            batch_size=args.batch_size,
-            dist=dist_train, workers=args.workers, logger=logger, training=False
-        )
-    else:
-        test_set, test_loader, sampler = build_dataloader(
-            dataset_cfg=cfg.DATA_CONFIG,
-            class_names=cfg.CLASS_NAMES,
-            batch_size=args.batch_size,
-            dist=dist_train, workers=args.workers, logger=logger, training=False
-        )
-
-    eval_output_dir = output_dir / 'eval' / 'eval_with_train'
-    eval_output_dir.mkdir(parents=True, exist_ok=True)
-    # Only evaluate the last args.num_epochs_to_eval epochs
-    args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)
-
-    repeat_eval_ckpt(
-        model.module if dist_train else model,
-        test_loader, args, eval_output_dir, logger, ckpt_dir,
-        dist_test=dist_train
-    )
-    logger.info('**********************End evaluation %s/%s(%s)**********************' %
-                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
 
 if __name__ == '__main__':

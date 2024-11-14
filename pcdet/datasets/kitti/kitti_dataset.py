@@ -5,9 +5,10 @@ import numpy as np
 from skimage import io
 
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
-from ...utils import box_utils, calibration_kitti, common_utils, object3d_kitti, self_training_utils
+from ...utils import box_utils, calibration_kitti, common_utils, object3d_kitti, self_training_utils, downsample_utils
 from ..dataset import DatasetTemplate
 
+from pcdet.config import cfg
 
 class KittiDataset(DatasetTemplate):
     def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None):
@@ -185,7 +186,44 @@ class KittiDataset(DatasetTemplate):
                         num_points_in_gt[k] = flag.sum()
                     annotations['num_points_in_gt'] = num_points_in_gt
 
-            return info
+            # 忽略，未使用
+            if self.split == 'test':
+                return infos
+
+            if cfg.get('SELF_TRAIN', None) and \
+                    cfg.SELF_TRAIN.get('PREDICT_DOWNSAMPLE_BEAN', None) and \
+                    cfg.SELF_TRAIN.PREDICT_DOWNSAMPLE_BEAN:
+                beam = 64
+                points = self.get_lidar(sample_idx)
+                pc_np = points[:, :3]
+                theta, phi = downsample_utils.compute_angles(pc_np)
+                label, centroids = downsample_utils.beam_label(theta, beam)
+                idxs = np.argsort(centroids)
+                mask = downsample_utils.generate_mask(phi, beam, label, idxs,
+                                                      beam_ratio=2, bin_ratio=1)
+                save_downsample = points[mask]
+                save_path = self.root_split_path / 'modes' / '32' / (
+                            '%s.bin' % sample_idx)
+                save_downsample.tofile(save_path)
+                mask = downsample_utils.generate_mask(phi, beam, label, idxs,
+                                                      beam_ratio=2, bin_ratio=2)
+                save_downsample = points[mask]
+                save_path = self.root_split_path / 'modes' / '32^' / (
+                            '%s.bin' % sample_idx)
+                save_downsample.tofile(save_path)
+                mask = downsample_utils.generate_mask(phi, beam, label, idxs,
+                                                      beam_ratio=4, bin_ratio=1)
+                save_downsample = points[mask]
+                save_path = self.root_split_path / 'modes' / '16' / (
+                            '%s.bin' % sample_idx)
+                save_downsample.tofile(save_path)
+                mask = downsample_utils.generate_mask(phi, beam, label, idxs,
+                                                      beam_ratio=4, bin_ratio=2)
+                save_downsample = points[mask]
+                save_path = self.root_split_path / 'modes' / '16^' / (
+                            '%s.bin' % sample_idx)
+                save_downsample.tofile(save_path)
+                return info
 
         sample_id_list = sample_id_list if sample_id_list is not None else self.sample_id_list
         with futures.ThreadPoolExecutor(num_workers) as executor:
@@ -341,6 +379,21 @@ class KittiDataset(DatasetTemplate):
 
         eval_det_annos = copy.deepcopy(det_annos)
         eval_gt_annos = [copy.deepcopy(info['annos']) for info in self.kitti_infos]
+
+        # 模型中 RPN_HEAD_CFGS 需要用到类名，而模型是源域与目标域数据集共享的，Nus 和 KITTI 的类名不同，统一将类名改为 Nus 的类名，则 KITTI 评估时需要将类名转回 KITTI 类名
+        if cfg.DATA_CONFIG.DATASET == 'NuScenesDataset':
+            class_names = ['Car',  'Pedestrian', 'Cyclist']
+            map_name_to_kitti = {
+                'car': 'Car',
+                'pedestrian': 'Pedestrian',
+                'bicycle': 'Cyclist',
+                'motorcycle': 'Cyclist'
+            }
+            for anno in eval_det_annos:
+                for k in range(anno['name'].shape[0]):
+                    if anno['name'][k] in map_name_to_kitti:
+                        anno['name'][k] = map_name_to_kitti[anno['name'][k]]
+
         ap_result_str, ap_dict = kitti_eval.get_official_eval_result(eval_gt_annos, eval_det_annos, class_names)
 
         return ap_result_str, ap_dict
@@ -403,10 +456,6 @@ class KittiDataset(DatasetTemplate):
 
             if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
                 input_dict['gt_boxes'] = None
-
-            # for debug only
-            # gt_boxes_mask = np.array([n in self.class_names for n in input_dict['gt_names']], dtype=np.bool_)
-            # debug_dict = {'gt_boxes': copy.deepcopy(gt_boxes_lidar[gt_boxes_mask])}
 
             road_plane = self.get_road_plane(sample_idx)
             if road_plane is not None:

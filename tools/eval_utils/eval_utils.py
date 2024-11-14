@@ -9,6 +9,7 @@ from pcdet.models import load_data_to_gpu
 from pcdet.utils import common_utils
 from pcdet.models.model_utils.dsnorm import set_ds_target
 
+import statistics
 
 def statistics_info(cfg, ret_dict, metric, disp_dict):
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
@@ -19,6 +20,71 @@ def statistics_info(cfg, ret_dict, metric, disp_dict):
     disp_dict['recall_%s' % str(min_thresh)] = \
         '(%d, %d) / %d' % (metric['recall_roi_%s' % str(min_thresh)], metric['recall_rcnn_%s' % str(min_thresh)], metric['gt_num'])
 
+def add_avg_performance(dataset, result_dict):
+
+    dataset_name = dataset.dataset_cfg['DATASET']
+
+    avg_types = ['3d', 'bev', 'image'] \
+        if dataset_name == 'KittiDataset' else ['3d', 'bev', 'image']
+
+    avg_class_names = ['Car', 'Pedestrian', 'Cyclist']
+    # avg_class_names = dataset.class_names
+    # print('avg_class_names:', avg_class_names)
+
+    difficulty_levels = ['easy', 'moderate', 'hard']
+
+    print(dataset_name)
+    if dataset.dataset_cfg.get('EVAL_METRIC', None):
+        dataset_name = dataset.dataset_cfg['EVAL_METRIC']
+    print(dataset_name)
+    if dataset_name == 'KittiDataset':
+        for type in avg_types:
+            for difficulty in difficulty_levels:
+                new_key = 'Average/{}_{}_R40'.format(type, difficulty)
+                new_value = [selected_key for selected_key in
+                             result_dict.keys() if
+                             type in selected_key and difficulty in selected_key]
+                new_value = [result_dict[i] for i in new_value]
+
+                new_value = sum(new_value) / len(new_value) if len(
+                    new_value) != 0 else 0
+                result_dict[new_key] = new_value
+                # Compute Harmonic_mean
+                print(result_dict.keys())
+                class_keys = ['{}_{}/{}_R40'.format(cls, type, difficulty) for cls in avg_class_names]
+                print(class_keys)
+                results_per_class = [result_dict[key] for key in class_keys]
+                # print(results_per_class)
+                new_key = 'Harmonic_mean/{}_{}_R40'.format(type, difficulty)
+                new_value = statistics.harmonic_mean(results_per_class)
+                # print(new_value)
+                result_dict[new_key] = new_value
+
+    elif dataset_name == 'WaymoDataset':
+        avg_types = ['AP', 'APH']
+        avg_class_names = dataset.class_names
+        difficulty_levels = ['Level_1', 'Level_2']
+        for type in avg_types:
+            for difficulty in difficulty_levels:
+                new_key = 'Average/{}_{}'.format(type,
+                                                 difficulty)  # do not consider sign class
+                new_value = [selected_key for selected_key in
+                             result_dict.keys() if
+                             type.lower() == selected_key.lower().split('/')[
+                                 -1] and difficulty.lower() in selected_key.lower() and 'sign' not in selected_key.lower()]
+                new_value = [result_dict[i] for i in new_value]
+                new_value = sum(new_value) / len(new_value) if len(
+                    new_value) != 0 else 0
+                result_dict[new_key] = new_value
+
+                new_key = 'Harmonic_mean/{}_{}_R40'.format(type, difficulty)
+                new_value = statistics.harmonic_mean(new_value)
+                result_dict[new_key] = new_value
+
+    # TODO: NuScenes
+    else:
+        raise NotImplementedError
+    return result_dict
 
 def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None, args=None):
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -116,7 +182,7 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
         eval_metric=cfg.MODEL.POST_PROCESSING.EVAL_METRIC,
         output_path=final_output_dir
     )
-
+    result_dict = add_avg_performance(dataset, result_dict)
     logger.info(result_str)
     ret_dict.update(result_dict)
 

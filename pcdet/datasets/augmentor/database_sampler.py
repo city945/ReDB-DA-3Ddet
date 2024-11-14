@@ -11,6 +11,13 @@ class DataBaseSampler(object):
         self.sampler_cfg = sampler_cfg
         self.logger = logger
         self.db_infos = {}
+
+        # Nus 将 motorcycle 视为 bicycle, gt_sampling 保留对 motorcycle 的采样
+        self.class_names=class_names = []
+        for x in sampler_cfg.SAMPLE_GROUPS:
+            class_name, sample_num = x.split(':')
+            class_names.append(class_name)
+
         for class_name in class_names:
             self.db_infos[class_name] = []
 
@@ -28,8 +35,8 @@ class DataBaseSampler(object):
         self.limit_whole_scene = sampler_cfg.get('LIMIT_WHOLE_SCENE', False)
         for x in sampler_cfg.SAMPLE_GROUPS:
             class_name, sample_num = x.split(':')
-            if class_name not in class_names:
-                continue
+            # if class_name not in class_names:
+            #     continue
             self.sample_class_num[class_name] = sample_num
             self.sample_groups[class_name] = {
                 'sample_num': sample_num,
@@ -194,6 +201,6 @@ class DataBaseSampler(object):
         if total_valid_sampled_dict.__len__() > 0:
             data_dict = self.add_sampled_boxes_to_scene(data_dict, sampled_gt_boxes, total_valid_sampled_dict)
 
-        # data_dict.pop('gt_boxes_mask')
+        # @tag bug 应该在 add_sampled_boxes_to_scene 运行时才是全一
         data_dict['gt_boxes_mask'] = np.ones(data_dict['gt_boxes'].shape[0], dtype=np.bool_)
         return data_dict
